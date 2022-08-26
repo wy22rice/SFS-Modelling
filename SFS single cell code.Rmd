@@ -1,0 +1,191 @@
+---
+title: "SFS single cell code"
+output: html_notebook
+---
+
+#Single data, no imputation
+```{r}
+library(tidyverse)
+library(hypergeo)
+library(writexl)
+single_data <- read_csv('500_simulated_SFS_1_mutational_data_SINGLE_CELL_FP=0.05_FN=0.1_NA=0.05.csv')
+single_data_0 <- single_data[-1,which(single_data[1,] == 0)]
+single_data_1 <- single_data[-1,which(single_data[1,] == 1)]
+single_0_row <- rowSums(single_data_0,na.rm=TRUE)
+single_1_row <- rowSums(single_data_1,na.rm=TRUE)
+
+n <- c(ncol(single_data_0),ncol(single_data_1))
+k0 <- 2:n[1]-1
+k1 <- 2:n[2]-1
+theta <- vec_theta_parameters
+b <- c(0.0231223633774043,0.0362447267548087)
+d <- c(.01,.01)
+r <- b-d
+p <- n_sample/expected_end_population
+alpha <- 1-(p*b/r)
+
+sfs_fit_0 <- as.numeric((theta[1]/r[1])*(((n[1]-k0-1)/(k0*(k0+1)))*hypergeo(1,2,k0+2,alpha[1])+(2/k0)*hypergeo(1,1,k0+1,alpha[1])))
+sfs_fit_1 <- as.numeric((theta[2]/r[2])*(((n[2]-k1-1)/(k1*(k1+1)))*hypergeo(1,2,k1+2,alpha[2])+(2/k1)*hypergeo(1,1,k1+1,alpha[2])))
+
+single_0_sfs <- data.frame(k=k0,sfs=tabulate(single_0_row,nbins=ncol(single_data_0)-1),fit=sfs_fit_0)
+write_xlsx(single_0_sfs,'clone 0 single.xlsx')
+single_1_sfs <- data.frame(k=k1,sfs=tabulate(single_1_row,nbins=ncol(single_data_1)-1),fit=sfs_fit_1)
+write_xlsx(single_1_sfs,'clone 1 single.xlsx')
+
+single_0_rss <- sum((single_0_sfs$sfs[1:20]-single_0_sfs$fit[1:20])^2)
+single_0_rss
+
+ggplot(single_0_sfs,aes(k,sfs)) + geom_bar(stat='identity') + ggtitle('Clone 0 SFS') + geom_line(aes(k,fit),col='red') + xlim(c(0,50))
+ggplot(single_1_sfs,aes(k,sfs)) + geom_bar(stat='identity') + ggtitle('Clone 1 SFS') + geom_line(aes(k,fit),col='red')
+```
+
+#Single data, fraction of 1s imputation
+```{r}
+fraction_1s <- function(x) {
+  return(sum(as.numeric(x) == 1,na.rm=TRUE)/sum(is.na(as.numeric(x)) == FALSE))
+}
+
+portion_1 <- apply(single_data_0,1,fraction_1s)
+
+#for loop way
+single_data_0_imp <- single_data_0
+for (i in 1:nrow(single_data_0_imp)) {
+  single_data_0_imp[i,which(is.na(single_data_0_imp[i,]))] <- portion_1[i]
+}
+
+#apply way - work in progress
+#imp_value <- function(i,y,x) {
+#  x[,which(is.na(x[i,]))] <- y[i]
+#}
+#sapply(1:nrow(single_data_0_imp),imp_value,y=portion_1,x=single_data_0_imp)
+
+single_0_row_imp <- round(rowSums(single_data_0_imp))
+single_0_sfs_imp <- data.frame(k=k0,sfs=tabulate(single_0_row_imp,nbins=ncol(single_data_0)-1),fit=sfs_fit_0)
+write_xlsx(single_0_sfs_imp,'clone 0 single frac imp.xlsx')
+
+single_0_imp_rss <- sum((single_0_sfs_imp$sfs[1:20]-single_0_sfs_imp$fit[1:20])^2)
+single_0_imp_rss
+
+ggplot(single_0_sfs_imp,aes(k,sfs)) + geom_bar(stat='identity') + ggtitle('Clone 0 Imp SFS') + geom_line(aes(k,fit),col='red') + xlim(c(0,50))
+```
+
+#False negatives (no FP)
+```{r}
+single_data_fn <- read_csv('500_simulated_SFS_1SINGLE_CELL_time_mut_500n_sample_300theta_0.05_FP=0_FN=0_NA=0.05.csv')
+fn_prob <- 0
+single_data_fn <- single_data_fn[,-seq(1,4)]
+single_data_fn_0 <- single_data_fn[-1,which(single_data_fn[1,] == 0)]
+single_data_fn_1 <- single_data_fn[-1,which(single_data_fn[1,] == 1)]
+
+portion_1 <- apply(single_data_fn_0,1,fraction_1s)
+for (i in 1:nrow(single_data_fn_0)) {
+  single_data_fn_0[i,which(is.na(single_data_fn_0[i,]))] <- portion_1[i]
+}
+portion_1 <- apply(single_data_fn_1,1,fraction_1s)
+for (i in 1:nrow(single_data_fn_1)) {
+  single_data_fn_1[i,which(is.na(single_data_fn_1[i,]))] <- portion_1[i]
+}
+
+single_0_fn_row <- round(rowSums(single_data_fn_0,na.rm=TRUE))
+single_1_fn_row <- round(rowSums(single_data_fn_1,na.rm=TRUE))
+
+n <- c(ncol(single_data_fn_0),ncol(single_data_fn_1))
+k0 <- seq(1,n[1]-1)
+k1 <- seq(1,n[2]-1)
+theta <- vec_theta_parameters
+b <- c(0.0231223633774043,0.0362447267548087)
+d <- c(.01,.01)
+r <- b-d
+p <- n_sample/expected_end_population
+alpha <- 1-(p*b/r)
+
+#Multiply by 6 to fit
+sfs_fit_fn_0 <- as.numeric((theta[1]/r[1])*(((n[1]-k0-1)/(k0*(k0+1)))*hypergeo(1,2,k0+2,alpha[1])+(2/k0)*hypergeo(1,1,k0+1,alpha[1])))
+
+fn_fit_0 <- rep(0,length(sfs_fit_fn_0))
+for (i in seq(length(sfs_fit_fn_0))) {
+  for (j in seq(i,length(sfs_fit_fn_0))) {
+    fn_fit_0[i] <- fn_fit_0[i] + (sfs_fit_fn_0[j] * choose(i,j) * (1-fn_prob)^i * fn_prob^(j-i))
+  }
+}
+
+single_0_fn_sfs <- data.frame(k=k0,sfs=tabulate(single_0_fn_row,nbins=ncol(single_data_fn_0)-1),fit=sfs_fit_fn_0,fn_fit=fn_fit_0)
+
+rss <- sum((single_0_fn_sfs$fn_fit-single_0_fn_sfs$sfs)^2)
+rss
+rss <- sum((single_0_fn_sfs$fit-single_0_fn_sfs$sfs)^2)
+rss
+
+write_xlsx(single_0_fn_sfs,paste('clone 0 fn=',fn_prob,'.xlsx'))
+
+sfs_fit_fn_1 <- as.numeric((theta[2]/r[2])*(((n[2]-k1-1)/(k1*(k1+1)))*hypergeo(1,2,k1+2,alpha[2])+(2/k1)*hypergeo(1,1,k1+1,alpha[2])))
+
+
+ggplot(single_0_fn_sfs,aes(k,sfs)) + geom_bar(stat='identity') + ggtitle(paste('Clone 0 SFS FN =',fn_prob)) + geom_line(aes(k,fit),col='red') + geom_line(aes(k,fn_fit),col='blue') + xlim(c(0,15))
+ggplot(single_1_fn_sfs,aes(k,sfs)) + geom_bar(stat='identity') + ggtitle('Clone 1 SFS (small FP/FN)') + geom_line(aes(k,fit),col='red') + geom_line(aes(k,optim),col='blue') + xlim(c(0,50))
+
+ggplot(single_0_fn_sfs,aes(log(k),log(sfs))) + ggtitle(paste('Clone 0 SFS FN =',fn_prob,'log-log')) + geom_line(aes(log(k),log(sfs)),col='black') + geom_line(aes(log(k),log(fit)),col='red') + geom_line(aes(log(k),log(fn_fit)),col='blue')
+```
+
+#Log-log plots
+```{r}
+log_data <- read_excel('C:\\Users\\Fei\\Desktop\\sfs datasets\\clone 1 900.xlsx')
+ggplot(log_data) + geom_line(aes(log(k),log(fit)),col='red') + geom_line(aes(log(k),log(sfs))) + ggtitle('Clone 1 log-log time mut = 900')
+```
+
+#Clones combined
+```{r}
+path = "C:/Users/Fei/Documents/stat reu"
+my.files = list.files(path = path, pattern = "SINGLE_CELL", full.names = TRUE)
+
+for (f in seq(length(my.files))) {
+  single_data <- read_csv(my.files[f])
+  fn_prob <- seq(0,.5,.1)
+  single_data_mix <- single_data[,-seq(1,4)]
+  n <- c(sum(single_data_mix[1,] == 0),sum(single_data_mix[1,] == 1))
+  weights <- n/n_sample
+  single_data_mix <- single_data_mix[-1,]
+  single_data_row <- rowSums(single_data_mix,na.rm=TRUE)
+  k <- seq(1,n_sample-1)
+  theta <- c(.1,.1)
+  b <- c(0.0231223633774043,0.0362447267548087)
+  d <- c(.01,.01)
+  r <- b-d
+  p <- n_sample/expected_end_population
+  alpha <- 1-(p*b/r)
+  sfs_fit_mix_0 <- weights[1]*as.numeric((theta[1]/r[1])*(((n[1]-k-1)/(k*(k+1)))*hypergeo(1,2,k+2,alpha[1])+(2/k)*hypergeo(1,1,k+1,alpha[1])))
+  sfs_fit_mix_1 <- weights[2]*as.numeric((theta[2]/r[2])*(((n[2]-k-1)/(k*(k+1)))*hypergeo(1,2,k+2,alpha[2])+(2/k)*hypergeo(1,1,k+1,alpha[2])))
+  sfs_fit_mix <- sfs_fit_mix_0 + sfs_fit_mix_1
+  
+  k_cons_fit <- function(par,sfs_fit_mix_sum,sfs_fit_mix,n_sample,sfs_dat,weights) {
+    sfs_fit_mix_sum <- rep(0,n_sample-1)
+    for (i in seq(sfs_fit_mix)){
+      sfs_fit_mix_sum[i] <- sfs_fit_mix[i] + par * dbinom(i,300,weights[2])
+    }
+    return(sum((sfs_fit_mix_sum - sfs_dat)^2))
+  }
+  
+  param <- optimize(k_cons_fit,rep(0,299),sfs_fit_mix,n_sample,tabulate(single_data_row,nbins=ncol(single_data_mix)-1),weights,interval=c(-100,100))
+  k_cons <- param$minimum
+  
+  sfs_fit_mix_sum <- rep(0,n_sample-1)
+  for (i in seq(sfs_fit_mix)){
+    sfs_fit_mix_sum[i] <- sfs_fit_mix[i] + k_cons * dbinom(i,300,weights[2])
+  }
+
+  fn_fit <- rep(0,n_sample-1)
+  for (i in seq(n_sample-1)) {
+    for (j in seq(i,n_sample-1)) {
+      fn_fit[i] <- fn_fit[i] + (sfs_fit_mix_sum[j] * choose(i,j) * (1-fn_prob[f])^i * fn_prob[f]^(j-i))
+    }
+  }
+  
+  single_mix_sfs <- data.frame(k=k,sfs=tabulate(single_data_row,nbins=n_sample-1),fit=sfs_fit_mix,fn_fit=fn_fit)
+  print(ggplot(single_mix_sfs,aes(k,log(sfs))) + geom_bar(stat='identity') + ggtitle(paste('SFS Mixed clones FN =',fn_prob[f])) + geom_line(aes(k,log(fit)),col='red') + geom_line(aes(k,log(fn_fit)),col='blue') + geom_vline(xintercept = n[2],linetype='dashed'))
+  ggsave(paste('mix clones fn', fn_prob[f],'.png'),last_plot())
+}
+
+
+single_0_rss <- sum((single_0_grid_sfs$sfs[1:20]-single_0_grid_sfs$fit[1:20])^2)
+single_0_rss
+```

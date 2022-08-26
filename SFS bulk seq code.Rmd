@@ -1,0 +1,358 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#Pre-step and much of pseudo-bulk were written by Andrew Koval. Rest is my own work.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Pre-step: Get the files; read in packages and functions
+```{r}
+path = "C:/Users/Fei/Documents/stat reu"
+my.files = list.files(path = path, pattern = "TRUTH", full.names = TRUE)
+
+make_sc_data = function(dat, FP, FN, missing, keep_singletons=1 ){
+  
+  ## Introduce some error ##
+  ## Introduce some error ##
+  
+  if(keep_singletons!=1){
+    # 1.) Remove singletons.
+    
+    ## This gets rid of the string variables and row of cell cluster labels.
+    mutation.freqs = rowSums(dat[-1,grep("C", colnames(dat))])
+    
+    ## Find the non-singletons.
+    non.singletons = which(mutation.freqs!=1)
+    
+    dat = dat[-1,]
+    
+    ## subset to non-singetons.
+    dat2 = dat[non.singletons, grep("C", colnames(dat))]
+  }else{
+    # Just remove the clone labels in the first row and the string variables.
+    dat2 = dat[-1,grep("C", colnames(dat))]
+  }
+  
+  
+  
+  # 2.) Add FP's and FN's.
+  
+  if(FP != 0){
+       FN_count = 0
+    for(i in 1:dim(dat2)[1]){
+      for(j in 1:dim(dat2)[2]){
+        flip = runif(1, min = 0, max = 1)
+        if(dat2[i,j]==1 & flip <= FN){
+          dat2[i,j] = 0
+          FN_count = FN_count + 1
+          
+        }else if(dat2[i,j]==0 & flip <= FP){
+          dat2[i,j] = 1
+          FP_count = FP_count + 1
+        }
+      }
+    }
+  }else if (FN != 0){
+      FN_count = 0
+      for(i in 1:dim(dat2)[1]){
+      for(j in 1:dim(dat2)[2]){
+        flip = runif(1, min = 0, max = 1)
+        if(dat2[i,j]==1 & flip <= FN){
+          dat2[i,j] = 0
+          FN_count = FN_count + 1
+          
+        }
+      }
+    }
+  }else {
+    print('no errors')
+  }
+  
+  FP_count = 0
+  
+ 
+  
+  # 4.) Add some missing values.
+  
+  if(missing!= 0){
+     missing_count = 0
+  for(i in 1:dim(dat2)[1]){
+    for(j in 1:dim(dat2)[2]){
+      flip = runif(1, min = 0, max = 1)
+      if(flip < missing){
+        dat2[i,j] = NA
+        missing_count = missing_count + 1
+      }
+    }
+  }
+  }
+  
+ 
+  
+  return(dat2)
+}
+
+# Specify your false negative rate here
+FN_rate <- seq(0,.9,.1)
+```
+
+## Pseudo-bulk: use TRUTH data and aggregate ALL cells, but we introduce FN's
+```{r}
+SFS.results.option3 = list()
+
+fn_count <- 1
+for (fn in FN_rate) {
+  x_count <- 1
+  SFS.per.x = list()
+  for(x in 1:2){
+    
+    # Read in the data.
+    dat = read.csv(my.files[x])
+    
+    # Get clone labels of the cells.
+    clone.labels = as.vector(t(dat[1, grep("C", colnames(dat))]))
+    table(clone.labels)
+    
+    
+    
+    # Choose the FP, FN, and NA rates here.
+    sc.dat = make_sc_data(dat = dat, FP = 0, FN = fn, missing = 0, keep_singletons=1)
+    
+    
+    
+    
+    # i.) Break data into clones.
+    
+    # Bad code, but it works...
+    dat = sc.dat
+    
+    ## use this to store the clone datasets.
+    clones = list()
+    count = 1
+    
+    for(i in unique(clone.labels)){
+      # Which cells have the ith clone label?
+      temp.clone = dat[-1, which(clone.labels==i)]
+      
+      # Which mutations are present in 0 of the cells of the ith clone?
+      sfs.vals = rowSums(temp.clone, na.rm = T)
+      
+      zero.mutations= which(sfs.vals==0)
+      
+      temp.clone = temp.clone[-zero.mutations,]
+      
+      # Make a clone i dataset with those cells.
+      clones[[count]] = temp.clone
+      count = count + 1
+    }
+    
+    
+    # ii.) make a pseudo_bulk of each clone.
+    
+    # This will store the pseudo-bulk of each clone.
+    pseudo_bulks = list()
+    
+    # This will store the number of cells in each clone.
+    clone.sizes = c()
+    
+    ## For each clone...
+    for(i in 1:length(clones)){
+      
+      # Get the (i-1)th clone.
+      temp.clone = clones[[i]]
+      
+      # This will hold the variant and non-variant counts of each mutation site.
+      temp.pseudo = as.data.frame(matrix(rep(NA, dim(temp.clone)[1]*2), 
+                                         nrow = dim(temp.clone)[1],
+                                         ncol = 2))
+      colnames(temp.pseudo) = c("Variants", "Non-Variants")
+      
+      # What is the current clone's number of cells?
+      n_i = dim(temp.clone)[2]
+      
+      clone.sizes[i] = n_i
+      
+      
+      ## for each mutation...
+      for(j in 1:dim(temp.clone)[1]){
+        
+        ## count the number of variants (remove missing if any).
+        temp.variant.count = sum(temp.clone[j,], na.rm = T)
+        temp.pseudo[j,1] = temp.variant.count
+        temp.pseudo[j,2] = n_i - temp.variant.count
+      }
+      ## Sanity check: Do the rowSums() of temp.pseudo==n_i?
+      rowSums(temp.pseudo)
+      pseudo_bulks[[i]] = temp.pseudo
+    }
+    
+    
+    
+    
+    # iii.) Make the SFS of each clone based on the pseudo-bulk.
+    
+    SFS.per.clone = list()
+    
+    ## For each clone...
+    for(i in 1:length(pseudo_bulks)){
+      
+      # Get the (i-1)th pseudo-bulk.
+      temp.pseudo = pseudo_bulks[[i]]
+      
+      # Get the SFS values.
+      sfs.vals = temp.pseudo[, "Variants"]
+      
+      # Make the Histogram of SFS values.
+      SFS = hist(sfs.vals, breaks = unique(sfs.vals))
+      
+      # How does it look without singletons?
+      a = 1
+      hist(sfs.vals[which(sfs.vals>a)], breaks = unique(sfs.vals[which(sfs.vals>a)]))
+      
+      sfs.ticks = unique(sfs.vals)
+      sfs.ticks = sfs.ticks[order(sfs.ticks)]
+      
+      sfs.heights = as.vector(table(sfs.vals))
+      
+      pseudo.SFS = as.data.frame(cbind(sfs.ticks, sfs.heights))
+      colnames(pseudo.SFS) = c("SFS.ticks", "SFS.heights")
+      
+      SFS.per.clone[[i]] = pseudo.SFS
+    }
+    SFS.per.x[[x_count]] = SFS.per.clone
+    x_count <- x_count + 1
+  }
+  SFS.results.option3[[fn_count]] = SFS.per.x
+  fn_count <- fn_count + 1
+}
+SFS.results.option3
+save(SFS.results.option3, file = "SFS.results.option3.RDATA")
+```
+
+#Generating plots
+```{r}
+
+raw_dat <- read_csv(my.files[1])
+n <- c(sum(as.numeric(raw_dat[1,-seq(1,4)]) == 0),sum(as.numeric(raw_dat[1,-seq(1,4)]) == 1))
+
+k <- list(seq(1,n[1]-1),seq(1,n[2]-1))
+
+for (clone in seq(2)) {
+  sfs_fit_0 <- as.numeric((theta[clone]/r[clone])*(((n[clone]-k[[clone]]-1)/(k[[clone]]*(k[[clone]]+1)))*hypergeo(1,2,k[[clone]]+2,alpha[clone])+(2/k[[clone]])*hypergeo(1,1,k[[clone]]+1,alpha[clone])))
+  
+  for (i in 1:10) {
+  
+    sfs_data_0 <- SFS.results.option3[[i]][[1]][[clone]]
+    if ((length(sfs_fit_0)+1) %in% sfs_data_0$SFS.ticks){
+      sfs_data_0 <- sfs_data_0[-nrow(sfs_data_0),]
+    }
+    
+    sfs_data_0 <- sfs_data_0 %>% complete(SFS.ticks = seq(length(sfs_fit_0)),fill=list(SFS.heights = 0))
+    sfs_data_0$sfs <- sfs_fit_0
+    
+    fn_fit_0 <- rep(0,length(sfs_fit_0))
+  
+    for (a in seq(length(sfs_fit_0))) {
+      for (b in seq(a,length(sfs_fit_0))) {
+        fn_fit_0[a] <- fn_fit_0[a] + (sfs_fit_0[b] * choose(a,b) * (1-FN_rate[i])^a * FN_rate[i]^(b-a))
+      }
+    }
+    
+    sfs_data_0$fn <- fn_fit_0
+    
+    plot <- ggplot(sfs_data_0,aes(SFS.ticks,SFS.heights)) + geom_bar(stat='identity') + ggtitle(paste('Bulk','Clone', clone-1, 'SFS FN =',FN_rate[i])) + xlim(c(0,15)) + geom_line(aes(SFS.ticks,sfs),col='red') + geom_line(aes(SFS.ticks,fn),col='blue')
+    ggsave(paste('Bulk','Clone', clone-1, 'SFS FN =',FN_rate[i],'.png',collapse=''),plot=plot)
+  }
+  
+}
+
+```
+
+#Average fits
+```{r}
+sfs_rss_avg <- data.frame(matrix(ncol = 4, nrow = 10))
+colnames(sfs_rss_avg) <- c('Clone 0 Lambert RSS','Clone 1 Lambert RSS','Clone 0 FN RSS','Clone 1 FN RSS')
+rownames(sfs_rss_avg) <- paste('FN:', seq(0,.9,.1))
+
+rss_vals <- list()
+
+rss_fit <- function(x,y) {
+  return(sum((x-y)^2))
+}
+
+rss_avg <- list()
+for (data in seq(40)) {
+  
+  rss_avg[[data]] <- list()
+  
+  raw_dat <- read_csv(my.files[data])
+  n <- c(sum(as.numeric(raw_dat[1,-seq(1,4)]) == 0),sum(as.numeric(raw_dat[1,-seq(1,4)]) == 1))
+  k <- list(seq(1,n[1]-1),seq(1,n[2]-1))
+  
+  rss_per_clone <- list()
+  for (clone in seq(2)) {
+    rss_per_clone[[clone]] <- list()
+    sfs_fit_0 <- as.numeric((theta[clone]/r[clone])*(((n[clone]-k[[clone]]-1)/(k[[clone]]*(k[[clone]]+1)))*hypergeo(1,2,k[[clone]]+2,alpha[clone])+(2/k[[clone]])*hypergeo(1,1,k[[clone]]+1,alpha[clone])))
+    
+    rss_sfs <- c()
+    rss_fn <- c()
+    
+    #rss_per_clone[[1]] <- list()
+    #rss_per_clone[[2]] <- list()
+    
+    rss_per_fn_sfs <- c()
+    rss_per_fn_fn <- c()
+    for (i in 1:10) {
+      
+      sfs_data_0 <- final_results[[i]][[data]][[clone]]
+      if ((length(sfs_fit_0)+1) %in% sfs_data_0$SFS.ticks){
+        sfs_data_0 <- sfs_data_0[-nrow(sfs_data_0),]
+      }
+      
+      sfs_data_0 <- sfs_data_0 %>% complete(SFS.ticks = seq(length(sfs_fit_0)),fill=list(SFS.heights = 0))
+      sfs_data_0$sfs <- sfs_fit_0
+      
+      fn_fit_0 <- rep(0,length(sfs_fit_0))
+    
+      for (a in seq(length(sfs_fit_0))) {
+        for (b in seq(a,length(sfs_fit_0))) {
+          fn_fit_0[a] <- fn_fit_0[a] + (sfs_fit_0[b] * choose(a,b) * (1-FN_rate[i])^a * FN_rate[i]^(b-a))
+        }
+      }
+      
+      sfs_data_0$fn <- fn_fit_0
+      
+      rss_per_fn_sfs <- c(rss_per_fn_sfs, rss_fit(sfs_data_0$SFS.heights,sfs_data_0$sfs))
+      rss_per_fn_fn <- c(rss_per_fn_fn, rss_fit(sfs_data_0$SFS.heights,sfs_data_0$fn))
+      
+    }
+    
+    rss_per_clone[[clone]][[1]] <- rss_per_fn_sfs
+    rss_per_clone[[clone]][[2]] <- rss_per_fn_fn
+    
+  }
+  rss_avg[[data]] <- rss_per_clone
+}
+
+save(rss_avg,file="rss avg.RDATA")
+#rss_avg = [[dataset num]][[clone num]][[1 = sfs 2 = fn]][[sfs per fn]]
+
+for (j in seq(2)){
+  for (k in seq(2)) {
+    for (l in seq(10)){
+      rss_vals <- c()
+      for (i in seq(2)) {
+        rss_vals <- c(rss_vals,rss_avg[[i]][[j]][[k]][l])
+      }
+      sfs_rss_avg[l,j+(2*(k-1))] <- mean(rss_vals)
+    }
+  }
+}
+sfs_rss_avg
+save(sfs_rss_avg,file="sfs_rss_avg.Rda")
+```
